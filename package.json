@@ -1,0 +1,32 @@
+{
+  "name": "codex-remote",
+  "version": "0.1.0",
+  "description": "自托管 Codex Remote Web UI，支持本机与 SSH 多机器",
+  "type": "module",
+  "main": "server/index.mjs",
+  "scripts": {
+    "prestart": "npm run build:web",
+    "start": "node server/index.mjs",
+    "dev:web": "vite --config frontend/vite.config.ts",
+    "build:web": "vite build --config frontend/vite.config.ts",
+    "typecheck:web": "vue-tsc --noEmit -p frontend/tsconfig.json",
+    "probe": "node tests/probe-app-server.mjs",
+    "test": "node tests/e2e-test.mjs",
+    "test:static": "node tests/p0-static-test.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@lucide/vue": "^1.39.0",
+    "ssh2": "^1.16.0",
+    "vue": "^3.5.13",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  },
+  "license": "MIT"
+}
