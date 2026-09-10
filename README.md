@@ -4,6 +4,14 @@
 
 默认界面使用 Vue 3 + Vite + TypeScript，按手机优先设计；桌面浏览器会自动展开为双栏工作台。
 
+## 手机版界面
+
+| 会话列表 | 对话与代码变更 |
+|---|---|
+| <img src="docs/screenshots/mobile-conversations.png" alt="手机版会话列表" width="280"> | <img src="docs/screenshots/mobile-chat.png" alt="手机版对话与代码变更" width="280"> |
+| **命令审批** | **多机器管理** |
+| <img src="docs/screenshots/mobile-approval.png" alt="手机版命令审批" width="280"> | <img src="docs/screenshots/mobile-machines.png" alt="手机版多机器管理" width="280"> |
+
 电脑上跑一个轻量桥接服务，手机浏览器打开、添加到主屏幕，即可：
 - 💬 给电脑上的 Codex 发任务，实时看流式回复
 - 📋 浏览历史会话、随时继续
