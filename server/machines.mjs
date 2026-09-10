@@ -62,25 +62,77 @@ export function buildRemoteCommand(machine) {
   const launch = machine.codexBin
     ? `exec ${posixQuote(machine.codexBin)} app-server`
     : `for codex_path in ${userBins.join(' ')}; do if [ -x "$codex_path" ]; then exec "$codex_path" app-server; fi; done; codex_path="$(command -v codex)" || { echo "codex not found for $(id -un)" >&2; exit 127; }; exec "$codex_path" app-server`;
-  const script = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.npm/bin:$HOME/.local/share/npm/bin:$HOME/bin:$PATH"; ${workspace}${launch}`;
+  const proxy = machine.proxy
+    ? `export HTTP_PROXY=${posixQuote(machine.proxy)} HTTPS_PROXY=${posixQuote(machine.proxy)} ALL_PROXY=${posixQuote(machine.proxy)} http_proxy=${posixQuote(machine.proxy)} https_proxy=${posixQuote(machine.proxy)} all_proxy=${posixQuote(machine.proxy)}; `
+    : '';
+  const script = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.npm/bin:$HOME/.local/share/npm/bin:$HOME/bin:$PATH"; ${proxy}${workspace}${launch}`;
   return `bash -lc ${posixQuote(script)}`;
 }
 
 export function upsertMachine({ id, name, type, host, port, user, sshKey, proxy, workspace, codexBin }) {
   const list = loadMachines();
-  const rec = { id: id || crypto.randomUUID(), name: name || host || '新机器', type: type || 'ssh' };
-  if (type === 'ssh') {
-    Object.assign(rec, { host, port: port || 22, user });
-    if (sshKey) rec.sshKey = sshKey;
+  const cleanId = id === undefined || id === '' ? crypto.randomUUID() : cleanIdentifier(id);
+  if (cleanId === 'local') throw new Error('不能修改本机配置');
+  const existing = list.find(m => m.id === cleanId);
+  const cleanType = type ?? existing?.type ?? 'ssh';
+  if (cleanType !== 'ssh') throw new Error('仅支持添加 SSH 服务器');
+  const cleanHost = cleanText(host ?? existing?.host, '服务器地址', 253, true);
+  if (/\s|[/?#@]/.test(cleanHost)) throw new Error('服务器地址格式无效');
+  const cleanUser = cleanText(user ?? existing?.user, '登录用户', 128, true);
+  const cleanName = cleanText(name ?? existing?.name ?? cleanHost, '名称', 100, true);
+  const cleanPort = Number(port ?? existing?.port ?? 22);
+  if (!Number.isInteger(cleanPort) || cleanPort < 1 || cleanPort > 65535) throw new Error('端口必须是 1 到 65535 的整数');
+  const rec = { id: cleanId, name: cleanName, type: cleanType, host: cleanHost, user: cleanUser, port: cleanPort };
+  if (rec.type === 'ssh') {
+    if (sshKey) rec.sshKey = validateSshKey(sshKey);
   }
-  if (proxy) rec.proxy = proxy;
-  if (workspace) rec.workspace = workspace;
-  if (codexBin) rec.codexBin = codexBin;
+  if (proxy !== undefined) rec.proxy = validateProxy(proxy);
+  if (workspace !== undefined) rec.workspace = validateRemotePath(workspace, '工作目录');
+  if (codexBin !== undefined) rec.codexBin = validateRemotePath(codexBin, 'Codex 路径');
   const i = list.findIndex(m => m.id === rec.id);
-  if (i >= 0) list[i] = { ...list[i], ...rec };
-  else list.push(rec);
+  const saved = i >= 0 ? { ...list[i], ...rec } : rec;
+  if (i >= 0) list[i] = saved;
+  else list.push(saved);
   saveMachines(list);
-  return rec;
+  return saved;
+}
+
+function cleanText(value, label, maxLength, required = false) {
+  if (typeof value !== 'string') throw new Error(`${label}格式无效`);
+  const text = value.trim();
+  if (required && !text) throw new Error(`请输入${label}`);
+  if (text.length > maxLength || /[\0\r\n]/.test(text)) throw new Error(`${label}格式无效`);
+  return text;
+}
+
+function cleanIdentifier(value) {
+  const id = cleanText(value, '机器 ID', 128, true);
+  if (!/^[A-Za-z0-9._:-]+$/.test(id)) throw new Error('机器 ID 格式无效');
+  return id;
+}
+
+function validateRemotePath(value, label) {
+  const text = cleanText(value, label, 4096);
+  if (text && !text.startsWith('/')) throw new Error(`${label}必须是绝对路径`);
+  return text;
+}
+
+function validateProxy(value) {
+  const text = cleanText(value, '代理地址', 2048);
+  if (!text) return '';
+  let parsed;
+  try { parsed = new URL(text); } catch { throw new Error('代理地址格式无效'); }
+  if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol)) throw new Error('代理协议不受支持');
+  return text;
+}
+
+function validateSshKey(value) {
+  const resolved = path.resolve(String(value));
+  const sshRoot = path.resolve(os.homedir(), '.ssh');
+  if (resolved !== sshRoot && !resolved.startsWith(sshRoot + path.sep)) {
+    throw new Error('SSH 私钥必须位于当前用户的 .ssh 目录中');
+  }
+  return resolved;
 }
 
 export function deleteMachine(id) {
@@ -106,6 +158,9 @@ export async function ensureConnection(machineId) {
   const machine = loadMachines().find(m => m.id === machineId);
   if (!machine) throw new Error(`机器不存在: ${machineId}`);
 
+  // A dead connection may still own a delayed restart callback. Stop it before
+  // replacing the entry so an old process cannot revive after reconfiguration.
+  if (conn) conn.stop();
   conn = new CodexConnection(machine);
   connections.set(machineId, conn);
   await conn.start();
@@ -115,6 +170,12 @@ export async function ensureConnection(machineId) {
 export async function closeConnection(machineId) {
   const conn = connections.get(machineId);
   if (conn) { conn.stop(); connections.delete(machineId); }
+}
+
+export async function shutdownAllConnections() {
+  const closing = [...connections.values()];
+  connections.clear();
+  for (const conn of closing) conn.stop();
 }
 
 export function listConnections() {
@@ -184,6 +245,9 @@ export class CodexConnection {
     this.stopping = false;
     this.stderr = '';
     this.restartDelay = 1000;
+    this.restartTimer = null;
+    this.generation = 0;
+    this.invalidJsonCount = 0;
     this.listeners = { notification: new Set(), serverRequest: new Set(), state: new Set() };
   }
 
@@ -205,14 +269,17 @@ export class CodexConnection {
     if (this.proc && !this.dead) return;
     this.stopping = false;
     this.stderr = '';
+    this.invalidJsonCount = 0;
+    const generation = ++this.generation;
 
     let cmd, args, env = { ...process.env };
     let exitSource, exitEvent = 'exit';
     if (this.machine.type === 'ssh') {
       // 表单未指定密钥时也显式传入当前 Windows 用户的默认私钥，避免后台进程
       // 因缺少 HOME/USERPROFILE 而找不到 ~/.ssh/id_rsa。
-      const defaultKey = path.join(os.homedir(), '.ssh', 'id_rsa');
-      const sshKey = this.machine.sshKey || (_exists(defaultKey) ? defaultKey : '');
+      const keyDir = path.join(os.homedir(), '.ssh');
+      const defaultKey = ['id_ed25519', 'id_rsa'].map(name => path.join(keyDir, name)).find(_exists);
+      const sshKey = this.machine.sshKey || defaultKey || '';
       try {
         const { client, stream } = await openSshSession(this.machine, sshKey);
         this.sshClient = client;
@@ -249,6 +316,7 @@ export class CodexConnection {
       exitSource = this.proc;
     }
 
+    const activeProc = this.proc;
     this.proc.stdout.setEncoding('utf8');
     const rl = createInterface({ input: this.proc.stdout });
     rl.on('line', (line) => this.#onLine(line));
@@ -256,13 +324,15 @@ export class CodexConnection {
       const s = d.toString().trim();
       if (s) {
         this.stderr = `${this.stderr}\n${s}`.slice(-2000);
-        this.#emit('notification', { method: '__stderr', params: { text: s, machineId: this.machine.id } });
+        this.#emit('notification', { method: '__stderr', machineId: this.machine.id, params: { text: s } });
       }
     });
     let exited = false;
     const onExit = (code, sig) => {
       if (exited) return;
       exited = true;
+      // A stale child/channel must not tear down a newer successful start.
+      if (this.proc !== activeProc || generation !== this.generation) return;
       this.ready = false;
       const detail = this.stderr ? `: ${this.stderr.trim()}` : '';
       this.#rejectAll(new Error(`codex app-server 退出 (code=${code} signal=${sig})${detail}`));
@@ -275,7 +345,14 @@ export class CodexConnection {
         const delay = this.restartDelay;
         this.restartDelay = Math.min(this.restartDelay * 2, 15000);
         this.#emit('state', { type: 'reconnecting', delay });
-        setTimeout(() => { this.dead = false; this.start().catch(() => {}); }, delay);
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = null;
+          if (!this.stopping && generation === this.generation) {
+            this.dead = false;
+            this.start().catch(() => {});
+          }
+        }, delay);
+        this.restartTimer.unref?.();
       }
     };
     // spawn/SSH channel 错误都收敛到同一个退出路径，避免重复重连。
@@ -285,10 +362,27 @@ export class CodexConnection {
     });
     exitSource.on(exitEvent, onExit);
 
-    await this.request('initialize', {
-      clientInfo: { name: 'codex-remote-bridge', title: 'Codex Remote', version: '0.2.0' },
-      capabilities: { experimentalApi: true }, // 解锁 thread/settings/update 等
-    });
+    try {
+      await this.request('initialize', {
+        clientInfo: { name: 'codex-remote-bridge', title: 'Codex Remote', version: '0.2.0' },
+        capabilities: { experimentalApi: true }, // 解锁 thread/settings/update 等
+      });
+    } catch (error) {
+      // initialize timeout/failure otherwise leaves a live child behind and
+      // makes all later retries talk to a broken JSON-RPC stream.
+      if (this.proc === activeProc) {
+        ++this.generation;
+        this.ready = false;
+        this.dead = true;
+        this.#rejectAll(error instanceof Error ? error : new Error(String(error)));
+        try { activeProc.kill(); } catch {}
+        try { this.sshClient?.end(); } catch {}
+        this.proc = null;
+        this.sshClient = null;
+        this.#emit('state', { type: 'initializeFailed' });
+      }
+      throw error;
+    }
     this.notify('initialized');
     this.ready = true;
     this.restartDelay = 1000;
@@ -297,6 +391,11 @@ export class CodexConnection {
 
   stop() {
     this.stopping = true;
+    ++this.generation;
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    this.ready = false;
+    this.#rejectAll(new Error('codex app-server 已停止'));
     if (this.proc) { try { this.proc.kill(); } catch {} }
     if (this.sshClient) { try { this.sshClient.end(); } catch {} }
     this.proc = null;
@@ -308,7 +407,11 @@ export class CodexConnection {
     const s = line.trim();
     if (!s) return;
     let msg;
-    try { msg = JSON.parse(s); } catch { return; }
+    try { msg = JSON.parse(s); } catch {
+      this.invalidJsonCount += 1;
+      this.#emit('state', { type: 'malformedMessage', count: this.invalidJsonCount });
+      return;
+    }
 
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
       const p = this.pending.get(msg.id);
@@ -331,19 +434,52 @@ export class CodexConnection {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`请求超时(${timeoutMs}ms): ${method}`)); }, timeoutMs);
       this.pending.set(id, { resolve, reject, method, timer });
-      try { this.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); }
-      catch (e) { reject(e); }
+      try {
+        const input = this.proc?.stdin;
+        if (!input || input.destroyed || input.writable === false) throw new Error('codex app-server 输入流不可写');
+        input.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n', (error) => {
+          if (!error) return;
+          const pending = this.pending.get(id);
+          if (pending) {
+            this.pending.delete(id);
+            clearTimeout(pending.timer);
+            pending.reject(error);
+          }
+        });
+      } catch (error) {
+        const pending = this.pending.get(id);
+        if (pending) {
+          this.pending.delete(id);
+          clearTimeout(pending.timer);
+        }
+        reject(error);
+      }
     });
   }
 
   notify(method, params = {}) {
-    if (!this.proc) return;
-    this.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+    this.#writeNotification({ jsonrpc: '2.0', method, params });
   }
 
   replyToServer(id, result) {
-    if (!this.proc) return;
-    this.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+    return new Promise((resolve, reject) => {
+      const input = this.proc?.stdin;
+      if (!input || input.destroyed || input.writable === false) return reject(new Error('审批通道已断开'));
+      try { input.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n', error => error ? reject(error) : resolve()); }
+      catch (error) { reject(error); }
+    });
+  }
+
+  #writeNotification(message) {
+    try {
+      const input = this.proc?.stdin;
+      if (!input || input.destroyed || input.writable === false) throw new Error('输入流不可写');
+      input.write(JSON.stringify(message) + '\n', (error) => {
+        if (error) this.#emit('state', { type: 'writeError' });
+      });
+    } catch {
+      this.#emit('state', { type: 'writeError' });
+    }
   }
 
   #rejectAll(err) {

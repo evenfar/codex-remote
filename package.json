@@ -11,7 +11,7 @@
     "build:web": "vite build --config frontend/vite.config.ts",
     "typecheck:web": "vue-tsc --noEmit -p frontend/tsconfig.json",
     "probe": "node tests/probe-app-server.mjs",
-    "test": "node tests/e2e-test.mjs",
+    "test": "npm run test:static && node tests/e2e-test.mjs",
     "test:static": "node tests/p0-static-test.mjs"
   },
   "engines": { "node": ">=18" },

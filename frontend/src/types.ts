@@ -7,7 +7,9 @@ export interface Machine {
   user?: string
   workspace?: string
   sshKey?: string
+  sshKeyConfigured?: boolean
   codexBin?: string
+  proxy?: string
 }
 
 export interface ThreadSummary {
@@ -19,6 +21,11 @@ export interface ThreadSummary {
   createdAt?: number
 }
 
+export interface PageResult<T> {
+  data?: T[]
+  nextCursor?: string | null
+}
+
 export type ImageAttachment = { url: string; name: string }
 
 export interface ChatMessage {
@@ -27,6 +34,8 @@ export interface ChatMessage {
   text: string
   images?: ImageAttachment[]
   reasoning?: string
+  delivery?: 'sending' | 'sent' | 'failed'
+  error?: string
 }
 
 export interface ActivityItem {
@@ -36,6 +45,7 @@ export interface ActivityItem {
   content: string
   status: 'running' | 'done' | 'failed'
   expanded?: boolean
+  truncated?: boolean
 }
 
 export interface ApprovalRequest {
@@ -44,9 +54,21 @@ export interface ApprovalRequest {
   machineId: string
   title: string
   detail: string
+  receivedAt?: number
 }
 
 export interface DraftPayload {
   text: string
   images: ImageAttachment[]
+}
+
+export interface CodexSettings {
+  model?: string
+  effort?: string
+  sandboxMode?: string
+}
+
+export interface UsageInfo {
+  tokenUsage?: any
+  rateLimits?: any
 }

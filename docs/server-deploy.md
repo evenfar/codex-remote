@@ -73,7 +73,8 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload && sudo systemctl enable --now codex-remote
-sudo journalctl -u codex-remote -f   # 看日志（含配对 token）
+sudo journalctl -u codex-remote -f   # 看运行日志（强 token 不会写入日志）
+cat data/token.json                  # 在项目目录中读取首次连接所需的强 token
 ```
 
 ## 6. 强烈建议：HTTPS 反代

@@ -3,8 +3,6 @@
 **手机遥控 Codex CLI** —— 自托管 Web App，基于 OpenAI 官方 `codex app-server` 协议。
 
 默认界面使用 Vue 3 + Vite + TypeScript，按手机优先设计；桌面浏览器会自动展开为双栏工作台。
-原来的无框架前端完整保留在 `/legacy/`，迁移期间可随时回退。
-如果浏览器曾安装旧版 PWA、根页面暂时仍显示旧界面，访问一次 `/app/` 即可进入新版并清理旧缓存。
 
 电脑上跑一个轻量桥接服务，手机浏览器打开、添加到主屏幕，即可：
 - 💬 给电脑上的 Codex 发任务，实时看流式回复
@@ -23,7 +21,7 @@
 - 🗜 压缩上下文、会话重命名
 
 ```
-手机浏览器 (PWA)  ←WebSocket(配对码鉴权)→  桥接服务 (Node.js)  ←stdio JSON-RPC→  codex app-server
+手机浏览器        ←WebSocket(配对码鉴权)→  桥接服务 (Node.js)  ←stdio JSON-RPC→  codex app-server
                                                               ↖ ssh user@server "codex app-server"（远程机器）
 ```
 
@@ -114,10 +112,6 @@ codex-remote 桥接服务已启动
 ├── frontend/          # 新版 Vue 3 + Vite + TypeScript 前端（默认入口）
 │   ├── src/App.vue    #   手机优先工作台：会话、机器、终端、Diff、审批
 │   └── src/useCodex.ts #  WebSocket / app-server 状态与协议适配
-├── public/            # 旧版前端（通过 /legacy/ 回退访问）
-│   ├── index.html / style.css / app.js
-│   ├── manifest.webmanifest / sw.js   # PWA（可添加到主屏幕）
-│   └── icon.svg / icon-maskable.svg
 ├── scripts/
 │   └── tunnel-guard.vbs   # Windows 端 SSH 反向隧道守护（服务器代理出海用）
 ├── docs/
@@ -143,10 +137,12 @@ NDJSON JSON-RPC 通信；手机通过 WebSocket 与桥接服务双向收发：
 
 ## 测试
 
-```bash
+```text
 npm start          # 终端 A：构建新版前端并启动服务
-npm test           # 终端 B：端到端测试（需能连上 OpenAI）
-npm run test:static # 不连接 Codex 的 P0 回归测试
+npm test           # 静态与行为回归；默认不创建真实 Codex 回合
+$env:CM_RUN_REAL_E2E='1'; npm test # Windows PowerShell：显式运行真实端到端回合
+CM_RUN_REAL_E2E=1 npm test         # Linux / macOS：显式运行真实端到端回合
+npm run test:static # 不连接 Codex 的状态、队列、审批与界面回归
 npm run typecheck:web # 新版前端 TypeScript 检查
 npm run build:web     # 仅构建新版前端
 ```
@@ -166,8 +162,9 @@ npm run build:web     # 仅构建新版前端
 **会话在手机上看，电脑上也在用 codex？** 同一 `~/.codex` 会话目录可被两个
 app-server 进程同时读，但避免两个进程同时写同一个 thread。
 
-**安全吗？** 局域网 + 6 位配对码够日常用；公网部署务必按
-[服务器部署文档](docs/server-deploy.md) 开 `strong` token 并套 HTTPS。
+**安全吗？** 服务会限制连续鉴权失败、校验浏览器来源，并且不会把配对码放入 URL、
+也不会向前端暴露 SSH 私钥路径。局域网可使用 6 位配对码；HTTP 流量仍是明文，
+公网部署务必按 [服务器部署文档](docs/server-deploy.md) 开 `strong` token 并套 HTTPS。
 
 ## 已知限制（Roadmap）
 
@@ -177,6 +174,7 @@ app-server 进程同时读，但避免两个进程同时写同一个 thread。
 - [ ] 语音输入（协议有 `thread/realtime/*` 接口）
 - [ ] 多设备同时在线的消息同步（当前广播模式已支持，UI 未区分设备）
 - [ ] 文件树浏览器 / git 界面（app-server 协议未暴露，需桥接层自建）
+- [ ] 真正的交互式 PTY 终端（当前终端面板展示 Codex 命令输出）
 
 ## 兼容性
 

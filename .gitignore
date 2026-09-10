@@ -3,4 +3,8 @@ public-vue/
 data/
 *.log
 tests/tmp/
-.env
+.env*
+*.pem
+*.key
+id_rsa
+id_ed25519

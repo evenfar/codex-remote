@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -6,10 +6,10 @@ import crypto from 'node:crypto';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, '..');
 export const DATA_DIR = path.join(ROOT, 'data');
-export const PUBLIC_DIR = path.join(ROOT, 'public');
 export const dataDir = DATA_DIR;
 
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+try { chmodSync(DATA_DIR, 0o700); } catch { /* Windows does not expose POSIX modes */ }
 
 /**
  * 配置来源优先级：环境变量 > data/config.json > 默认值
@@ -40,13 +40,21 @@ function loadConfig() {
     proxy: env.CM_PROXY || fileConfig.proxy || '',
 
     // 服务器场景：是否允许手机经 HTTPS 反代访问（Caddy/nginx 负责 TLS）
-    trustProxy: env.CM_TRUST_PROXY || fileConfig.trustProxy || false,
+    trustProxy: asBoolean(env.CM_TRUST_PROXY ?? fileConfig.trustProxy),
   };
   return cfg;
 }
 
+function asBoolean(value) {
+  return value === true || value === 'true' || value === '1';
+}
+
 export function readJson(p) {
-  try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return {}; };
+  try {
+    const value = JSON.parse(readFileSync(p, 'utf8'));
+    try { chmodSync(p, 0o600); } catch { /* Windows does not expose POSIX modes */ }
+    return value;
+  } catch { return {}; }
 }
 
 // ---- token 管理 ----
@@ -73,6 +81,7 @@ export function regenerateToken() {
 
 import { writeFileSync, unlinkSync } from 'node:fs';
 function writeJson(p, obj) {
-  writeFileSync(p, JSON.stringify(obj, null, 2), 'utf8');
+  writeFileSync(p, JSON.stringify(obj, null, 2), { encoding: 'utf8', mode: 0o600 });
+  try { chmodSync(p, 0o600); } catch { /* Windows does not expose POSIX modes */ }
 }
 export { writeJson as writeJsonSafe };

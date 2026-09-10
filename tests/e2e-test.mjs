@@ -4,17 +4,17 @@
  *       turn/start 流式 delta、turn/completed、审批请求转发与答复闭环。
  * 用法: node scripts/e2e-test.mjs  （需先 npm start 跑起服务，或本脚本自启）
  */
-import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 
 const PORT = process.env.CM_PORT || 3010;
-const TOKEN = process.env.CM_TEST_TOKEN;
+let TOKEN = process.env.CM_TEST_TOKEN;
 const BASE = `ws://127.0.0.1:${PORT}/ws`;
+const RUN_REAL_E2E = process.env.CM_RUN_REAL_E2E === '1';
 
 let passed = 0, failed = 0;
 function ok(name) { passed++; console.log(`  ✅ ${name}`); }
 function bad(name, detail) { failed++; console.log(`  ❌ ${name} — ${detail}`); }
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 class Phone {
   constructor(token) {
@@ -27,11 +27,12 @@ class Phone {
   }
   connect() {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(`${BASE}?token=${encodeURIComponent(this.token)}`);
-      this.ws.on('open', resolve);
+      this.ws = new WebSocket(BASE);
+      this.ws.on('open', () => this.ws.send(JSON.stringify({ kind: 'auth', token: this.token })));
       this.ws.on('error', reject);
       this.ws.on('message', (raw) => {
         const msg = JSON.parse(raw.toString());
+        if (msg.type === 'bridge' && msg.event === 'hello') resolve();
         if (msg.type === 'bridge' && msg.event === 'rpc.result') {
           const p = this.pendingRpc.get(msg.data.ref);
           if (p) { this.pendingRpc.delete(msg.data.ref); p.resolve(msg.data.result); }
@@ -48,8 +49,21 @@ class Phone {
   rpc(method, params) {
     const ref = ++this.ref;
     return new Promise((resolve, reject) => {
-      this.pendingRpc.set(ref, { resolve, reject });
-      this.ws.send(JSON.stringify({ kind: 'rpc', ref, method, params }));
+      const timer = setTimeout(() => {
+        this.pendingRpc.delete(ref);
+        reject(new Error(`RPC 超时: ${method}`));
+      }, 15000);
+      this.pendingRpc.set(ref, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+      try {
+        this.ws.send(JSON.stringify({ kind: 'rpc', ref, method, params, machineId: 'local' }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingRpc.delete(ref);
+        reject(error);
+      }
     });
   }
   replyServer(id, result) {
@@ -68,17 +82,26 @@ class Phone {
       this.waiters.push(w);
     });
   }
-  close() { try { this.ws.close(); } catch {} }
+  close() {
+    for (const pending of this.pendingRpc.values()) pending.reject(new Error('测试连接已关闭'));
+    this.pendingRpc.clear();
+    try { this.ws.close(); } catch {}
+  }
 }
 
 async function main() {
   console.log('== e2e 测试 ==');
+  if (!RUN_REAL_E2E) {
+    console.log('跳过真实 Codex 回合（设置 CM_RUN_REAL_E2E=1 才运行）；本测试默认不产生副作用。');
+    return;
+  }
+  if (!TOKEN) TOKEN = JSON.parse(readFileSync(new URL('../data/token.json', import.meta.url), 'utf8')).token;
 
   // 0) 错误 token 必须被拒
-  const badPhone = new Phone('000000-wrong');
   let rejected = false;
   await new Promise((resolve) => {
-    const ws = new WebSocket(`${BASE}?token=wrong-token`);
+    const ws = new WebSocket(BASE);
+    ws.on('open', () => ws.send(JSON.stringify({ kind: 'auth', token: 'wrong-token' })));
     ws.on('message', (raw) => {
       const m = JSON.parse(raw.toString());
       if (m.event === 'auth.failed') { rejected = true; }
@@ -93,7 +116,7 @@ async function main() {
   const phone = new Phone(TOKEN);
   await phone.connect();
   const hello = await phone.waitFor(m => m.event === 'hello', 10000);
-  ok(`连接并收到 hello (codex ready=${hello.data.ready})`);
+  ok(`连接并收到 hello（机器列表 ${hello.data?.machines?.length ?? 0}）`);
 
   // 2) rpc 白名单外方法必须被拒
   try {
@@ -107,13 +130,13 @@ async function main() {
 
   // 4) thread/start
   const started = await phone.rpc('thread/start', {
-    options: { cwd: process.cwd(), sandbox: { mode: 'workspace-write' } },
+    cwd: process.cwd(), sandbox: 'workspace-write',
   });
   const threadId = started?.thread?.id;
   threadId ? ok(`thread/start -> ${threadId.slice(0, 13)}...`) : bad('thread/start', JSON.stringify(started).slice(0, 200));
 
   // 5) turn/start + 等流式 delta（要求跑个命令，从而触发审批）
-  await phone.rpc('turn/start', {
+  const turnStarted = await phone.rpc('turn/start', {
     threadId,
     input: [{ type: 'text', text: '请运行命令 node -e "console.log(42)" 然后告诉我输出结果' }],
   });
@@ -144,7 +167,7 @@ async function main() {
   hasAgentMsg ? ok('收到 agentMessage（流式或完整）') : bad('agentMessage', '未见任何 agent 输出');
 
   // 9) turn/interrupt 在 idle 状态调用不应崩溃（错误即可接受）
-  try { await phone.rpc('turn/interrupt', { threadId }); } catch {}
+  try { await phone.rpc('turn/interrupt', { threadId, turnId: turnStarted?.turn?.id }); } catch {}
   ok('turn/interrupt 调用未崩溃');
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
